@@ -1,50 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import { db } from './firebase';
+import { doc, setDoc, onSnapshot, updateDoc, deleteDoc, getDoc } from 'firebase/firestore';
 import { Scissors, Users, Timer, Zap, Shield, AlertCircle, Copy, Check } from 'lucide-react';
-
-// --- FIREBASE SETUP START ---
-import { initializeApp } from "firebase/app";
-import { getDatabase, ref, get, set, child } from "firebase/database";
-
-const firebaseConfig = {
-  apiKey: "AIzaSyDAI46UYQMVMCnNqQD9MqR3yhiHUzghYuA",
-  authDomain: "timebomb-game.firebaseapp.com",
-  databaseURL: "https://timebomb-game-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId: "timebomb-game",
-  storageBucket: "timebomb-game.firebasestorage.app",
-  messagingSenderId: "752842528482",
-  appId: "1:752842528482:web:f97dd6bead7bb6bca4f0bb"
-};
-
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
-
-// Polyfill window.storage to use Firebase
-window.storage = {
-  get: async (key) => {
-    try {
-      const dbRef = ref(db);
-      const snapshot = await get(child(dbRef, key));
-      if (snapshot.exists()) {
-        // The original code expects an object with a 'value' string property
-        return { value: snapshot.val() };
-      }
-      return null;
-    } catch (error) {
-      console.error("Firebase Get Error", error);
-      return null;
-    }
-  },
-  set: async (key, value) => {
-    try {
-      // The original code passes a JSON string as 'value'
-      await set(ref(db, key), value);
-    } catch (error) {
-      console.error("Firebase Set Error", error);
-    }
-  }
-};
-// --- FIREBASE SETUP END ---
 
 // Game configuration based on player count
 const GAME_CONFIG = {
@@ -55,7 +12,6 @@ const GAME_CONFIG = {
   8: { sherlock: 5, moriarty: 3, wires: 31, defusing: 8, bomb: 1 }
 };
 
-// Generate random room code
 const generateRoomCode = () => {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code = '';
@@ -66,7 +22,7 @@ const generateRoomCode = () => {
 };
 
 export default function TimeBombGame() {
-  const [screen, setScreen] = useState('home'); // 'home', 'lobby', 'game', 'end'
+  const [screen, setScreen] = useState('home'); 
   const [roomCode, setRoomCode] = useState('');
   const [inputCode, setInputCode] = useState('');
   const [playerId, setPlayerId] = useState(null);
@@ -80,236 +36,132 @@ export default function TimeBombGame() {
   const [gameLog, setGameLog] = useState([]);
   const [showLog, setShowLog] = useState(false);
 
-  // Poll for game state updates
+  // Real-time listener for game state updates
   useEffect(() => {
-    if (!roomCode || screen === 'home') return;
+    if (!roomCode) return;
 
-    const pollGameState = async () => {
-      try {
-        const result = await window.storage.get(`room:${roomCode}`, true);
-        if (result?.value) {
-          const state = JSON.parse(result.value);
-          setGameState(state);
-          
-          // Update game log
-          if (state.log && JSON.stringify(state.log) !== JSON.stringify(gameLog)) {
-            setGameLog(state.log || []);
-          }
-          
-          // Update screen based on game state
-          if (state.status === 'lobby' && screen !== 'lobby') {
-            setScreen('lobby');
-          } else if (state.status === 'playing' && screen !== 'game') {
-            setScreen('game');
-            // Set role if not already set
-            if (!myRole && playerId !== null) {
-              const player = state.players.find(p => p.id === playerId);
-              if (player) setMyRole(player.role);
-            }
-          } else if (state.status === 'ended' && screen !== 'end') {
-            setScreen('end');
-          }
+    const unsub = onSnapshot(doc(db, "rooms", roomCode), (docSnap) => {
+      if (docSnap.exists()) {
+        const state = docSnap.data();
+        setGameState(state);
+        setGameLog(state.log || []);
+
+        if (state.status === 'lobby') setScreen('lobby');
+        if (state.status === 'playing') {
+          setScreen('game');
+          const player = state.players.find(p => p.id === playerId);
+          if (player && player.role) setMyRole(player.role);
         }
-      } catch (err) {
-        console.log('Polling game state:', err);
+        if (state.status === 'ended') setScreen('end');
+      } else {
+        setScreen('home');
       }
-    };
+    });
 
-    pollGameState();
-    const interval = setInterval(pollGameState, 1000);
-    return () => clearInterval(interval);
-  }, [roomCode, screen, playerId, myRole, gameLog]);
+    return () => unsub();
+  }, [roomCode, playerId]);
 
-  // Create room
   const createRoom = async () => {
-    if (!playerName.trim()) {
-      setError('Please enter your name');
-      return;
-    }
-
+    if (!playerName.trim()) return setError('Please enter your name');
     setLoading(true);
     setError('');
     
     const code = generateRoomCode();
-    const newPlayerId = 0;
+    const newPlayerId = Date.now(); // Unique timestamp ID
     
     const initialState = {
       code,
       status: 'lobby',
       hostId: newPlayerId,
       playerCount: 5,
-      players: [{
-        id: newPlayerId,
-        name: playerName.trim(),
-        ready: false
-      }],
-      createdAt: Date.now()
+      players: [{ id: newPlayerId, name: playerName.trim(), ready: false }],
+      createdAt: Date.now(),
+      log: []
     };
 
     try {
-      await window.storage.set(`room:${code}`, JSON.stringify(initialState), true);
-      setRoomCode(code);
+      await setDoc(doc(db, "rooms", code), initialState);
       setPlayerId(newPlayerId);
-      setGameState(initialState);
-      setScreen('lobby');
+      setRoomCode(code);
     } catch (err) {
-      setError('Failed to create room. Please try again.');
+      setError('Connection failed.');
     } finally {
       setLoading(false);
     }
   };
 
-  // Join room
   const joinRoom = async () => {
-    if (!playerName.trim()) {
-      setError('Please enter your name');
-      return;
-    }
-    
-    if (!inputCode.trim()) {
-      setError('Please enter a room code');
-      return;
-    }
-
+    if (!playerName.trim() || !inputCode.trim()) return setError('Missing name or code');
     setLoading(true);
     setError('');
-    
     const code = inputCode.trim().toUpperCase();
 
-    try {
-      const result = await window.storage.get(`room:${code}`, true);
+    try {   
+      const docRef = doc(db, "rooms", code);
+      const docSnap = await getDoc(docRef);
       
-      if (!result?.value) {
+      if (!docSnap.exists()) {
         setError('Room not found');
         setLoading(false);
         return;
       }
 
-      const state = JSON.parse(result.value);
-      
+      const state = docSnap.data();
       if (state.status !== 'lobby') {
         setError('Game already started');
         setLoading(false);
         return;
       }
 
-      if (state.players.length >= state.playerCount) {
-        setError('Room is full');
-        setLoading(false);
-        return;
-      }
+      const newPlayerId = Date.now();
+      const updatedPlayers = [...state.players, { id: newPlayerId, name: playerName.trim(), ready: false }];
 
-      // Check if player name already exists or is rejoining
-      const existingPlayer = state.players.find(p => p.name === playerName.trim());
-      let myNewId;
-
-      if (existingPlayer) {
-          // Rejoin logic could go here, but for now we treat as new or error
-          // Simpler for this demo: create new ID
-          myNewId = Math.max(...state.players.map(p => p.id)) + 1;
-      } else {
-          myNewId = Math.max(...state.players.map(p => p.id)) + 1;
-      }
-      
-      state.players.push({
-        id: myNewId,
-        name: playerName.trim(),
-        ready: false
-      });
-
-      await window.storage.set(`room:${code}`, JSON.stringify(state), true);
-      
+      await updateDoc(docRef, { players: updatedPlayers });
+      setPlayerId(newPlayerId);
       setRoomCode(code);
-      setPlayerId(myNewId);
-      setGameState(state);
-      setScreen('lobby');
     } catch (err) {
-      setError('Failed to join room. Please try again.');
+      setError('Failed to join.');
     } finally {
       setLoading(false);
     }
   };
 
-  // Update player count (host only)
   const updatePlayerCount = async (count) => {
     if (playerId !== gameState.hostId) return;
-
-    const newState = {
-      ...gameState,
-      playerCount: count
-    };
-
-    try {
-      await window.storage.set(`room:${roomCode}`, JSON.stringify(newState), true);
-      setGameState(newState);
-    } catch (err) {
-      console.error('Failed to update player count');
-    }
+    await updateDoc(doc(db, "rooms", roomCode), { playerCount: count });
   };
 
-  // Toggle ready
   const toggleReady = async () => {
-    const newState = { ...gameState };
-    // We need to map over players to create a new array to avoid direct mutation issues
-    newState.players = newState.players.map(p => {
-        if (p.id === playerId) {
-            return { ...p, ready: !p.ready };
-        }
-        return p;
-    });
-
-    try {
-      await window.storage.set(`room:${roomCode}`, JSON.stringify(newState), true);
-      setGameState(newState);
-    } catch (err) {
-      console.error('Failed to toggle ready');
-    }
+    const updatedPlayers = gameState.players.map(p => 
+      p.id === playerId ? { ...p, ready: !p.ready } : p
+    );
+    await updateDoc(doc(db, "rooms", roomCode), { players: updatedPlayers });
   };
 
-  // Start game (host only)
   const startGame = async () => {
     if (playerId !== gameState.hostId) return;
-    if (gameState.players.length < 4) {
-      setError('Need at least 4 players to start');
-      return;
-    }
-    if (gameState.players.length > gameState.playerCount) {
-      setError('Too many players for selected player count');
-      return;
-    }
-    if (gameState.players.length !== gameState.playerCount) {
-      setError(`Waiting for ${gameState.playerCount} players`);
-      return;
-    }
-
     const config = GAME_CONFIG[gameState.playerCount];
     
-    // Assign roles
-    const roles = [
-      ...Array(config.sherlock).fill('sherlock'),
-      ...Array(config.moriarty).fill('moriarty')
-    ].sort(() => Math.random() - 0.5);
+    const roles = [...Array(config.sherlock).fill('sherlock'), ...Array(config.moriarty).fill('moriarty')]
+      .sort(() => Math.random() - 0.5);
 
-    // Create wire deck
     const wireDeck = [
       ...Array(config.defusing).fill('defusing'),
       ...Array(config.bomb).fill('bomb'),
       ...Array(config.wires - config.defusing - config.bomb).fill('safe')
     ].sort(() => Math.random() - 0.5);
 
-    // Assign wires to players
     const playersWithRoles = gameState.players.map((player, idx) => ({
       ...player,
       role: roles[idx],
-      wires: wireDeck.slice(idx * 5, (idx + 1) * 5).map((type, wireIdx) => ({
+      wires: wireDeck.slice(idx * (config.wires/gameState.playerCount), (idx + 1) * (config.wires/gameState.playerCount)).map((type, wireIdx) => ({
         id: `${player.id}-0-${wireIdx}`,
         type,
         revealed: false
       }))
     }));
 
-    const newState = {
-      ...gameState,
+    await updateDoc(doc(db, "rooms", roomCode), {
       status: 'playing',
       players: playersWithRoles,
       currentPlayer: 0,
@@ -318,158 +170,77 @@ export default function TimeBombGame() {
       defusingFound: 0,
       config,
       log: [{ message: '🎮 Game started!', timestamp: Date.now() }]
-    };
-
-    try {
-      await window.storage.set(`room:${roomCode}`, JSON.stringify(newState), true);
-      setGameState(newState);
-      
-      // Set my role
-      const me = playersWithRoles.find(p => p.id === playerId);
-      if (me) setMyRole(me.role);
-      
-      setScreen('game');
-    } catch (err) {
-      setError('Failed to start game');
-    }
+    });
   };
 
-  // Cut a wire
   const cutWire = async (targetPlayerId, wireId) => {
     if (gameState.players[gameState.currentPlayer].id !== playerId) return;
-    if (targetPlayerId === playerId) return;
-
-    const newState = { ...gameState };
-    // Deep clone to avoid mutation references
-    newState.players = JSON.parse(JSON.stringify(newState.players));
     
+    const newState = { ...gameState };
     const targetPlayer = newState.players.find(p => p.id === targetPlayerId);
     const currentPlayer = newState.players.find(p => p.id === playerId);
     const wire = targetPlayer.wires.find(w => w.id === wireId);
     
-    if (wire.revealed) return;
-    
     wire.revealed = true;
-    
-    // Add to log
     const log = newState.log || [];
     let logMessage = `${currentPlayer.name} cut ${targetPlayer.name}'s wire: `;
     
-    // Check wire type
     if (wire.type === 'bomb') {
-      logMessage += '💣 BOMB!';
       newState.status = 'ended';
       newState.winner = 'moriarty';
-      log.push({ message: logMessage, timestamp: Date.now() });
-      log.push({ message: '💥 Big Ben destroyed! Moriarty wins!', timestamp: Date.now() });
+      log.push({ message: logMessage + '💣 BOMB!', timestamp: Date.now() });
     } else if (wire.type === 'defusing') {
       newState.defusingFound += 1;
-      logMessage += `✂️ Defusing (${newState.defusingFound}/${newState.config.defusing})`;
-      log.push({ message: logMessage, timestamp: Date.now() });
-      
+      log.push({ message: logMessage + `✂️ Defusing (${newState.defusingFound}/${newState.config.defusing})`, timestamp: Date.now() });
       if (newState.defusingFound === newState.config.defusing) {
         newState.status = 'ended';
         newState.winner = 'sherlock';
-        log.push({ message: '🎉 All defusing wires found! Sherlock wins!', timestamp: Date.now() });
       }
     } else {
-      logMessage += '✓ Safe wire';
-      log.push({ message: logMessage, timestamp: Date.now() });
+      log.push({ message: logMessage + '✓ Safe', timestamp: Date.now() });
     }
-    
-    newState.log = log;
     
     if (newState.status !== 'ended') {
       newState.revealedInRound += 1;
-      
-      // Check if round ends
       if (newState.revealedInRound === newState.playerCount) {
         if (newState.round === 4) {
           newState.status = 'ended';
           newState.winner = 'moriarty';
-          log.push({ message: '⏰ 4 rounds completed. Moriarty wins!', timestamp: Date.now() });
         } else {
-          // Start new round
-          const unrevealedWires = newState.players.flatMap(p => 
-            p.wires.filter(w => !w.revealed).map(w => w.type)
-          ).sort(() => Math.random() - 0.5);
-          
-          const wiresPerPlayer = Math.floor(unrevealedWires.length / newState.playerCount);
-          
-          newState.players = newState.players.map((player, idx) => ({
-            ...player,
-            wires: unrevealedWires.slice(idx * wiresPerPlayer, (idx + 1) * wiresPerPlayer)
-              .map((type, wireIdx) => ({
-                id: `${player.id}-${newState.round}-${wireIdx}`,
-                type,
-                revealed: false
-              }))
-          }));
-          
+          const unrevealed = newState.players.flatMap(p => p.wires.filter(w => !w.revealed).map(w => w.type)).sort(() => Math.random() - 0.5);
+          const perPlayer = unrevealed.length / newState.playerCount;
+          newState.players.forEach((p, idx) => {
+            p.wires = unrevealed.slice(idx * perPlayer, (idx + 1) * perPlayer).map((t, wi) => ({ id: `${p.id}-${newState.round}-${wi}`, type: t, revealed: false }));
+          });
           newState.round += 1;
           newState.revealedInRound = 0;
-          log.push({ message: `🔄 Round ${newState.round} started!`, timestamp: Date.now() });
         }
-      } else {
-        // Find next player index
-        const currentPlayerIndex = newState.players.findIndex(p => p.id === targetPlayerId);
-        newState.currentPlayer = currentPlayerIndex;
       }
+      newState.currentPlayer = newState.players.findIndex(p => p.id === targetPlayerId);
     }
 
-    try {
-      await window.storage.set(`room:${roomCode}`, JSON.stringify(newState), true);
-      setGameState(newState);
-      setSelectedWire(null);
-    } catch (err) {
-      console.error('Failed to cut wire');
-    }
+    await updateDoc(doc(db, "rooms", roomCode), newState);
+    setSelectedWire(null);
   };
 
-  // Copy room code
+  const playAgain = async () => {
+    await updateDoc(doc(db, "rooms", roomCode), {
+      status: 'lobby',
+      players: gameState.players.map(p => ({ id: p.id, name: p.name, ready: false })),
+      log: [],
+      winner: null
+    });
+  };
+
   const copyRoomCode = () => {
     navigator.clipboard.writeText(roomCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Leave room
   const leaveRoom = () => {
     setScreen('home');
     setRoomCode('');
-    setPlayerId(null);
-    setGameState(null);
-    setMyRole(null);
-    setInputCode('');
-    setError('');
-    setGameLog([]);
-  };
-
-  // Play again (host only)
-  const playAgain = async () => {
-    if (playerId !== gameState.hostId) return;
-
-    const newState = {
-      ...gameState,
-      status: 'lobby',
-      players: gameState.players.map(p => ({ ...p, ready: false, role: undefined, wires: undefined })),
-      currentPlayer: undefined,
-      round: undefined,
-      revealedInRound: undefined,
-      defusingFound: undefined,
-      config: undefined,
-      winner: undefined,
-      log: []
-    };
-
-    try {
-      await window.storage.set(`room:${roomCode}`, JSON.stringify(newState), true);
-      setGameState(newState);
-      setMyRole(null);
-      setScreen('lobby');
-    } catch (err) {
-      console.error('Failed to restart game');
-    }
   };
 
   // Home Screen
@@ -479,7 +250,7 @@ export default function TimeBombGame() {
         <div className="bg-slate-800 rounded-2xl shadow-2xl p-8 max-w-md w-full border border-slate-700">
           <div className="text-center mb-8">
             <Timer className="w-16 h-16 mx-auto mb-4 text-yellow-400" />
-            <h1 className="text-4xl font-bold text-white mb-2">Time Bomb</h1>
+            <h1 className="text-4xl font-bold text-white mb-2">Time Bomb v1</h1>
             <p className="text-slate-400">London, 1890. Defuse or detonate?</p>
           </div>
           
@@ -761,10 +532,6 @@ export default function TimeBombGame() {
   }
 
   // Game Screen
-  if (!gameState || !gameState.players || !gameState.players[gameState.currentPlayer]) {
-      return <div className="text-white text-center p-10">Loading game state...</div>;
-  }
-  
   const currentPlayerObj = gameState.players[gameState.currentPlayer];
   const isMyTurn = currentPlayerObj.id === playerId;
   const myPlayer = gameState.players.find(p => p.id === playerId);
@@ -904,19 +671,44 @@ export default function TimeBombGame() {
                     );
                   })}
                 </div>
-                
-                {isSelected && selectedWire?.playerId === player.id && (
-                  <button
-                    onClick={() => cutWire(player.id, selectedWire.wireId)}
-                    className="mt-3 w-full bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-bold py-2 rounded-lg flex items-center justify-center gap-2 animate-pulse"
-                  >
-                    <Scissors className="w-4 h-4" />
-                    CUT WIRE
-                  </button>
-                )}
               </div>
             );
           })}
+        </div>
+
+        {/* Cut Wire Button */}
+        {selectedWire && isMyTurn && (
+          <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2">
+            <button
+              onClick={() => cutWire(selectedWire.playerId, selectedWire.wireId)}
+              className="bg-yellow-500 hover:bg-yellow-600 text-slate-900 px-8 py-4 rounded-full font-bold text-lg shadow-2xl transition-all hover:scale-105"
+            >
+              <Scissors className="inline w-6 h-6 mr-2" />
+              Cut Wire
+            </button>
+          </div>
+        )}
+
+        {/* Legend */}
+        <div className="mt-6 bg-slate-800 rounded-xl p-4 border border-slate-700">
+          <h4 className="text-white font-bold mb-3 flex items-center">
+            <AlertCircle className="w-5 h-5 mr-2" />
+            Wire Types
+          </h4>
+          <div className="grid grid-cols-3 gap-4 text-sm">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-slate-600 rounded flex items-center justify-center text-slate-400">✓</div>
+              <span className="text-slate-300">Safe Wire</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-blue-500 rounded flex items-center justify-center">✂️</div>
+              <span className="text-slate-300">Defusing Wire</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-red-500 rounded flex items-center justify-center">💣</div>
+              <span className="text-slate-300">Bomb</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
