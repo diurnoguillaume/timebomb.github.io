@@ -73,7 +73,7 @@ export default function TimeBombGame() {
       code,
       status: 'lobby',
       hostId: newPlayerId,
-      playerCount: 5,
+      playerCount: 4,
       players: [{ id: newPlayerId, name: playerName.trim(), ready: false }],
       createdAt: Date.now(),
       log: []
@@ -83,9 +83,12 @@ export default function TimeBombGame() {
       await setDoc(doc(db, "rooms", code), initialState);
       setPlayerId(newPlayerId);
       setRoomCode(code);
+      console.log("after await", newPlayerId, code);
     } catch (err) {
+      console.log("catch", newPlayerId, code);
       setError('Connection failed.');
     } finally {
+      console.log("finally", newPlayerId, code);
       setLoading(false);
     }
   };
