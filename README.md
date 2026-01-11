@@ -1,5 +1,3 @@
-### 3. **`README.md`** (optional but recommended)
-```markdown
 # Time Bomb - Multiplayer Game
 
 A thrilling online multiplayer deduction game based on the board game Time Bomb.
