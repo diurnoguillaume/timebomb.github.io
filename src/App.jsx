@@ -1,7 +1,25 @@
-import React, { useState, useEffect } from 'react';
-import { db } from './firebase';
-import { doc, setDoc, onSnapshot, updateDoc, deleteDoc, getDoc } from 'firebase/firestore';
-import { Scissors, Users, Timer, Zap, Shield, AlertCircle, Copy, Check } from 'lucide-react';
+// ==========================================
+// FIREBASE CONFIGURATION
+// ==========================================
+// REPLACE THIS WITH YOUR FIREBASE CONFIG FROM STEP 3!
+const firebaseConfig = {
+  apiKey: "AIzaSyDAI46UYQMVMCnNqQD9MqR3yhiHUzghYuA",
+  authDomain: "timebomb-game.firebaseapp.com",
+  databaseURL: "https://timebomb-game-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "timebomb-game",
+  storageBucket: "timebomb-game.firebasestorage.app",
+  messagingSenderId: "752842528482",
+  appId: "1:752842528482:web:f97dd6bead7bb6bca4f0bb"
+};
+// Initialize Firebase
+firebase.initializeApp(firebaseConfig);
+const database = firebase.database();
+
+// ==========================================
+// REACT & GAME LOGIC
+// ==========================================
+const { useState, useEffect } = React;
+const { Scissors, Users, Timer, Zap, Shield, AlertCircle, Copy, Check } = lucide;
 
 // Game configuration based on player count
 const GAME_CONFIG = {
@@ -12,6 +30,7 @@ const GAME_CONFIG = {
   8: { sherlock: 5, moriarty: 3, wires: 31, defusing: 8, bomb: 1 }
 };
 
+// Generate random room code
 const generateRoomCode = () => {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code = '';
@@ -21,8 +40,8 @@ const generateRoomCode = () => {
   return code;
 };
 
-export default function TimeBombGame() {
-  const [screen, setScreen] = useState('home'); 
+function TimeBombGame() {
+  const [screen, setScreen] = useState('home');
   const [roomCode, setRoomCode] = useState('');
   const [inputCode, setInputCode] = useState('');
   const [playerId, setPlayerId] = useState(null);
@@ -36,95 +55,136 @@ export default function TimeBombGame() {
   const [gameLog, setGameLog] = useState([]);
   const [showLog, setShowLog] = useState(false);
 
-  // Real-time listener for game state updates
+  // Listen to Firebase room updates
   useEffect(() => {
     if (!roomCode) return;
 
-    const unsub = onSnapshot(doc(db, "rooms", roomCode), (docSnap) => {
-      if (docSnap.exists()) {
-        const state = docSnap.data();
+    const roomRef = database.ref(`rooms/${roomCode}`);
+    
+    const handleUpdate = (snapshot) => {
+      const state = snapshot.val();
+      if (state) {
         setGameState(state);
-        setGameLog(state.log || []);
-
-        if (state.status === 'lobby') setScreen('lobby');
-        if (state.status === 'playing') {
-          setScreen('game');
-          const player = state.players.find(p => p.id === playerId);
-          if (player && player.role) setMyRole(player.role);
+        
+        if (state.log) {
+          setGameLog(state.log);
         }
-        if (state.status === 'ended') setScreen('end');
-      } else {
-        setScreen('home');
+        
+        // Update screen based on game status
+        if (state.status === 'lobby' && screen !== 'lobby') {
+          setScreen('lobby');
+        } else if (state.status === 'playing' && screen !== 'game') {
+          setScreen('game');
+          if (!myRole && playerId !== null) {
+            const player = state.players.find(p => p.id === playerId);
+            if (player) setMyRole(player.role);
+          }
+        } else if (state.status === 'ended' && screen !== 'end') {
+          setScreen('end');
+        }
       }
-    });
+    };
 
-    return () => unsub();
-  }, [roomCode, playerId]);
+    roomRef.on('value', handleUpdate);
+    
+    return () => roomRef.off('value', handleUpdate);
+  }, [roomCode, playerId, myRole, screen]);
 
   const createRoom = async () => {
-    if (!playerName.trim()) return setError('Please enter your name');
+    if (!playerName.trim()) {
+      setError('Please enter your name');
+      return;
+    }
+
     setLoading(true);
     setError('');
     
     const code = generateRoomCode();
-    const newPlayerId = Date.now(); // Unique timestamp ID
+    const newPlayerId = 0;
     
     const initialState = {
       code,
       status: 'lobby',
       hostId: newPlayerId,
-      playerCount: 4,
-      players: [{ id: newPlayerId, name: playerName.trim(), ready: false }],
-      createdAt: Date.now(),
-      log: []
+      playerCount: 5,
+      players: [{
+        id: newPlayerId,
+        name: playerName.trim(),
+        ready: false
+      }],
+      createdAt: Date.now()
     };
 
     try {
-      console.log("before await", newPlayerId, code);
-      await setDoc(doc(db, "rooms", code), initialState);
-      setPlayerId(newPlayerId);
+      await database.ref(`rooms/${code}`).set(initialState);
       setRoomCode(code);
-      console.log("after await", newPlayerId, code);
+      setPlayerId(newPlayerId);
+      setGameState(initialState);
+      setScreen('lobby');
     } catch (err) {
-      console.log("catch", newPlayerId, code);
-      setError('Connection failed.');
+      console.error('Create room error:', err);
+      setError('Failed to create room. Please try again.');
     } finally {
-      console.log("finally", newPlayerId, code);
       setLoading(false);
     }
   };
 
   const joinRoom = async () => {
-    if (!playerName.trim() || !inputCode.trim()) return setError('Missing name or code');
+    if (!playerName.trim()) {
+      setError('Please enter your name');
+      return;
+    }
+    
+    if (!inputCode.trim()) {
+      setError('Please enter a room code');
+      return;
+    }
+
     setLoading(true);
     setError('');
+    
     const code = inputCode.trim().toUpperCase();
 
-    try {   
-      const docRef = doc(db, "rooms", code);
-      const docSnap = await getDoc(docRef);
+    try {
+      const snapshot = await database.ref(`rooms/${code}`).once('value');
       
-      if (!docSnap.exists()) {
+      if (!snapshot.exists()) {
         setError('Room not found');
         setLoading(false);
         return;
       }
 
-      const state = docSnap.data();
+      const state = snapshot.val();
+      
       if (state.status !== 'lobby') {
         setError('Game already started');
         setLoading(false);
         return;
       }
 
-      const newPlayerId = Date.now();
-      const updatedPlayers = [...state.players, { id: newPlayerId, name: playerName.trim(), ready: false }];
+      if (state.players.length >= state.playerCount) {
+        setError('Room is full');
+        setLoading(false);
+        return;
+      }
 
-      await updateDoc(docRef, { players: updatedPlayers });
-      setPlayerId(newPlayerId);
+      const newPlayerId = Math.max(...state.players.map(p => p.id)) + 1;
+      
+      state.players.push({
+        id: newPlayerId,
+        name: playerName.trim(),
+        ready: false
+      });
+
+      await database.ref(`rooms/${code}`).set(state);
+      
       setRoomCode(code);
+      setPlayerId(newPlayerId);
+      setGameState(state);
+      setScreen('lobby');
     } catch (err) {
-      setError('Failed to join.');
+      console.error('Join room error:', err);
+      setError('Failed to join room. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -132,22 +192,42 @@ export default function TimeBombGame() {
 
   const updatePlayerCount = async (count) => {
     if (playerId !== gameState.hostId) return;
-    await updateDoc(doc(db, "rooms", roomCode), { playerCount: count });
+
+    try {
+      await database.ref(`rooms/${roomCode}/playerCount`).set(count);
+    } catch (err) {
+      console.error('Failed to update player count');
+    }
   };
 
   const toggleReady = async () => {
-    const updatedPlayers = gameState.players.map(p => 
-      p.id === playerId ? { ...p, ready: !p.ready } : p
-    );
-    await updateDoc(doc(db, "rooms", roomCode), { players: updatedPlayers });
+    const playerIndex = gameState.players.findIndex(p => p.id === playerId);
+    if (playerIndex === -1) return;
+
+    try {
+      await database.ref(`rooms/${roomCode}/players/${playerIndex}/ready`).set(!gameState.players[playerIndex].ready);
+    } catch (err) {
+      console.error('Failed to toggle ready');
+    }
   };
 
   const startGame = async () => {
     if (playerId !== gameState.hostId) return;
+    if (gameState.players.length < 4) {
+      setError('Need at least 4 players to start');
+      return;
+    }
+    if (gameState.players.length !== gameState.playerCount) {
+      setError(`Waiting for ${gameState.playerCount} players`);
+      return;
+    }
+
     const config = GAME_CONFIG[gameState.playerCount];
     
-    const roles = [...Array(config.sherlock).fill('sherlock'), ...Array(config.moriarty).fill('moriarty')]
-      .sort(() => Math.random() - 0.5);
+    const roles = [
+      ...Array(config.sherlock).fill('sherlock'),
+      ...Array(config.moriarty).fill('moriarty')
+    ].sort(() => Math.random() - 0.5);
 
     const wireDeck = [
       ...Array(config.defusing).fill('defusing'),
@@ -158,14 +238,15 @@ export default function TimeBombGame() {
     const playersWithRoles = gameState.players.map((player, idx) => ({
       ...player,
       role: roles[idx],
-      wires: wireDeck.slice(idx * (config.wires/gameState.playerCount), (idx + 1) * (config.wires/gameState.playerCount)).map((type, wireIdx) => ({
+      wires: wireDeck.slice(idx * 5, (idx + 1) * 5).map((type, wireIdx) => ({
         id: `${player.id}-0-${wireIdx}`,
         type,
         revealed: false
       }))
     }));
 
-    await updateDoc(doc(db, "rooms", roomCode), {
+    const newState = {
+      ...gameState,
       status: 'playing',
       players: playersWithRoles,
       currentPlayer: 0,
@@ -174,66 +255,101 @@ export default function TimeBombGame() {
       defusingFound: 0,
       config,
       log: [{ message: '🎮 Game started!', timestamp: Date.now() }]
-    });
+    };
+
+    try {
+      await database.ref(`rooms/${roomCode}`).set(newState);
+      
+      const me = playersWithRoles.find(p => p.id === playerId);
+      if (me) setMyRole(me.role);
+      
+      setScreen('game');
+    } catch (err) {
+      console.error('Start game error:', err);
+      setError('Failed to start game');
+    }
   };
 
   const cutWire = async (targetPlayerId, wireId) => {
     if (gameState.players[gameState.currentPlayer].id !== playerId) return;
-    
-    const newState = { ...gameState };
+    if (targetPlayerId === playerId) return;
+
+    const newState = JSON.parse(JSON.stringify(gameState)); // Deep clone
     const targetPlayer = newState.players.find(p => p.id === targetPlayerId);
     const currentPlayer = newState.players.find(p => p.id === playerId);
     const wire = targetPlayer.wires.find(w => w.id === wireId);
     
+    if (wire.revealed) return;
+    
     wire.revealed = true;
+    
     const log = newState.log || [];
     let logMessage = `${currentPlayer.name} cut ${targetPlayer.name}'s wire: `;
     
     if (wire.type === 'bomb') {
+      logMessage += '💣 BOMB!';
       newState.status = 'ended';
       newState.winner = 'moriarty';
-      log.push({ message: logMessage + '💣 BOMB!', timestamp: Date.now() });
+      log.push({ message: logMessage, timestamp: Date.now() });
+      log.push({ message: '💥 Big Ben destroyed! Moriarty wins!', timestamp: Date.now() });
     } else if (wire.type === 'defusing') {
       newState.defusingFound += 1;
-      log.push({ message: logMessage + `✂️ Defusing (${newState.defusingFound}/${newState.config.defusing})`, timestamp: Date.now() });
+      logMessage += `✂️ Defusing (${newState.defusingFound}/${newState.config.defusing})`;
+      log.push({ message: logMessage, timestamp: Date.now() });
+      
       if (newState.defusingFound === newState.config.defusing) {
         newState.status = 'ended';
         newState.winner = 'sherlock';
+        log.push({ message: '🎉 All defusing wires found! Sherlock wins!', timestamp: Date.now() });
       }
     } else {
-      log.push({ message: logMessage + '✓ Safe', timestamp: Date.now() });
+      logMessage += '✓ Safe wire';
+      log.push({ message: logMessage, timestamp: Date.now() });
     }
+    
+    newState.log = log;
     
     if (newState.status !== 'ended') {
       newState.revealedInRound += 1;
+      
       if (newState.revealedInRound === newState.playerCount) {
         if (newState.round === 4) {
           newState.status = 'ended';
           newState.winner = 'moriarty';
+          log.push({ message: '⏰ 4 rounds completed. Moriarty wins!', timestamp: Date.now() });
         } else {
-          const unrevealed = newState.players.flatMap(p => p.wires.filter(w => !w.revealed).map(w => w.type)).sort(() => Math.random() - 0.5);
-          const perPlayer = unrevealed.length / newState.playerCount;
-          newState.players.forEach((p, idx) => {
-            p.wires = unrevealed.slice(idx * perPlayer, (idx + 1) * perPlayer).map((t, wi) => ({ id: `${p.id}-${newState.round}-${wi}`, type: t, revealed: false }));
-          });
+          const unrevealedWires = newState.players.flatMap(p => 
+            p.wires.filter(w => !w.revealed).map(w => w.type)
+          ).sort(() => Math.random() - 0.5);
+          
+          const wiresPerPlayer = Math.floor(unrevealedWires.length / newState.playerCount);
+          
+          newState.players = newState.players.map((player, idx) => ({
+            ...player,
+            wires: unrevealedWires.slice(idx * wiresPerPlayer, (idx + 1) * wiresPerPlayer)
+              .map((type, wireIdx) => ({
+                id: `${player.id}-${newState.round}-${wireIdx}`,
+                type,
+                revealed: false
+              }))
+          }));
+          
           newState.round += 1;
           newState.revealedInRound = 0;
+          log.push({ message: `🔄 Round ${newState.round} started!`, timestamp: Date.now() });
         }
+      } else {
+        const currentPlayerIndex = newState.players.findIndex(p => p.id === targetPlayerId);
+        newState.currentPlayer = currentPlayerIndex;
       }
-      newState.currentPlayer = newState.players.findIndex(p => p.id === targetPlayerId);
     }
 
-    await updateDoc(doc(db, "rooms", roomCode), newState);
-    setSelectedWire(null);
-  };
-
-  const playAgain = async () => {
-    await updateDoc(doc(db, "rooms", roomCode), {
-      status: 'lobby',
-      players: gameState.players.map(p => ({ id: p.id, name: p.name, ready: false })),
-      log: [],
-      winner: null
-    });
+    try {
+      await database.ref(`rooms/${roomCode}`).set(newState);
+      setSelectedWire(null);
+    } catch (err) {
+      console.error('Cut wire error:', err);
+    }
   };
 
   const copyRoomCode = () => {
@@ -245,16 +361,49 @@ export default function TimeBombGame() {
   const leaveRoom = () => {
     setScreen('home');
     setRoomCode('');
+    setPlayerId(null);
+    setGameState(null);
+    setMyRole(null);
+    setInputCode('');
+    setError('');
+    setGameLog([]);
   };
 
-  // Home Screen
+  const playAgain = async () => {
+    if (playerId !== gameState.hostId) return;
+
+    const newState = {
+      ...gameState,
+      status: 'lobby',
+      players: gameState.players.map(p => ({ ...p, ready: false, role: undefined, wires: undefined })),
+      currentPlayer: undefined,
+      round: undefined,
+      revealedInRound: undefined,
+      defusingFound: undefined,
+      config: undefined,
+      winner: undefined,
+      log: []
+    };
+
+    try {
+      await database.ref(`rooms/${roomCode}`).set(newState);
+      setMyRole(null);
+      setScreen('lobby');
+    } catch (err) {
+      console.error('Play again error:', err);
+    }
+  };
+
+  // ==========================================
+  // RENDER: HOME SCREEN
+  // ==========================================
   if (screen === 'home') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center p-4">
         <div className="bg-slate-800 rounded-2xl shadow-2xl p-8 max-w-md w-full border border-slate-700">
           <div className="text-center mb-8">
             <Timer className="w-16 h-16 mx-auto mb-4 text-yellow-400" />
-            <h1 className="text-4xl font-bold text-white mb-2">Time Bomb v1</h1>
+            <h1 className="text-4xl font-bold text-white mb-2">Time Bomb</h1>
             <p className="text-slate-400">London, 1890. Defuse or detonate?</p>
           </div>
           
@@ -319,7 +468,9 @@ export default function TimeBombGame() {
     );
   }
 
-  // Lobby Screen
+  // ==========================================
+  // RENDER: LOBBY SCREEN
+  // ==========================================
   if (screen === 'lobby') {
     const isHost = playerId === gameState.hostId;
     const allReady = gameState.players.every(p => p.ready) && gameState.players.length === gameState.playerCount;
@@ -458,7 +609,9 @@ export default function TimeBombGame() {
     );
   }
 
-  // End Screen
+  // ==========================================
+  // RENDER: END SCREEN
+  // ==========================================
   if (screen === 'end') {
     const isWinner = (gameState.winner === 'sherlock' && myRole === 'sherlock') || 
                      (gameState.winner === 'moriarty' && myRole === 'moriarty');
