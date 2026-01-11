@@ -80,6 +80,7 @@ export default function TimeBombGame() {
     };
 
     try {
+      console.log("before await", newPlayerId, code);
       await setDoc(doc(db, "rooms", code), initialState);
       setPlayerId(newPlayerId);
       setRoomCode(code);
