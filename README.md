@@ -31,4 +31,3 @@ Simply open `index.html` in your browser to run locally.
 
 ## Credits
 Based on the board game Time Bomb by Yusuke Sato.
-```
