@@ -1,33 +1,16 @@
-# Time Bomb - Multiplayer Game
+# React + Vite
 
-A thrilling online multiplayer deduction game based on the board game Time Bomb.
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
-## Play Now
-🎮 **[Play Time Bomb](https://diurnoguillaume.github.io/timebomb.github.io/)**
+Currently, two official plugins are available:
 
-## How to Play
-1. Create a room and share the 5-character code with friends
-2. Wait for 4-8 players to join
-3. Everyone clicks "Ready" when prepared
-4. Host starts the game
-5. Find all defusing wires (Sherlock team) or cut the bomb (Moriarty team)!
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
 
-## Features
-- Real-time multiplayer gameplay
-- 4-8 player support
-- Private room codes
-- Game log to track actions
-- Play again feature
-- Mobile-friendly interface
+## React Compiler
 
-## Tech Stack
-- React 18
-- Tailwind CSS
-- Lucide Icons
-- GitHub Pages
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
 
-## Local Development
-Simply open `index.html` in your browser to run locally.
+## Expanding the ESLint configuration
 
-## Credits
-Based on the board game Time Bomb by Yusuke Sato.
+If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.

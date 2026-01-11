@@ -1,31 +1,50 @@
-const { useState, useEffect } = React;
-const { Scissors, Users, Timer, Zap, Shield, AlertCircle, Copy, Check } = lucide;
+import React, { useState, useEffect } from 'react';
+import { Scissors, Users, Timer, Zap, Shield, AlertCircle, Copy, Check } from 'lucide-react';
 
-// Mock storage for GitHub Pages (replace with real backend later)
-const mockStorage = {
-  data: new Map(),
-  async get(key, shared) {
-    const value = this.data.get(key);
-    return value ? { key, value, shared } : null;
-  },
-  async set(key, value, shared) {
-    this.data.set(key, value);
-    return { key, value, shared };
-  },
-  async delete(key, shared) {
-    this.data.delete(key);
-    return { key, deleted: true, shared };
-  },
-  async list(prefix, shared) {
-    const keys = Array.from(this.data.keys()).filter(k => !prefix || k.startsWith(prefix));
-    return { keys, prefix, shared };
-  }
+// --- FIREBASE SETUP START ---
+import { initializeApp } from "firebase/app";
+import { getDatabase, ref, get, set, child } from "firebase/database";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDAI46UYQMVMCnNqQD9MqR3yhiHUzghYuA",
+  authDomain: "timebomb-game.firebaseapp.com",
+  databaseURL: "https://timebomb-game-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "timebomb-game",
+  storageBucket: "timebomb-game.firebasestorage.app",
+  messagingSenderId: "752842528482",
+  appId: "1:752842528482:web:f97dd6bead7bb6bca4f0bb"
 };
 
-// Use mock storage if window.storage is not available
-if (!window.storage) {
-  window.storage = mockStorage;
-}
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+// Polyfill window.storage to use Firebase
+window.storage = {
+  get: async (key) => {
+    try {
+      const dbRef = ref(db);
+      const snapshot = await get(child(dbRef, key));
+      if (snapshot.exists()) {
+        // The original code expects an object with a 'value' string property
+        return { value: snapshot.val() };
+      }
+      return null;
+    } catch (error) {
+      console.error("Firebase Get Error", error);
+      return null;
+    }
+  },
+  set: async (key, value) => {
+    try {
+      // The original code passes a JSON string as 'value'
+      await set(ref(db, key), value);
+    } catch (error) {
+      console.error("Firebase Set Error", error);
+    }
+  }
+};
+// --- FIREBASE SETUP END ---
 
 // Game configuration based on player count
 const GAME_CONFIG = {
@@ -46,8 +65,8 @@ const generateRoomCode = () => {
   return code;
 };
 
-function TimeBombGame() {
-  const [screen, setScreen] = useState('home');
+export default function TimeBombGame() {
+  const [screen, setScreen] = useState('home'); // 'home', 'lobby', 'game', 'end'
   const [roomCode, setRoomCode] = useState('');
   const [inputCode, setInputCode] = useState('');
   const [playerId, setPlayerId] = useState(null);
@@ -72,14 +91,17 @@ function TimeBombGame() {
           const state = JSON.parse(result.value);
           setGameState(state);
           
+          // Update game log
           if (state.log && JSON.stringify(state.log) !== JSON.stringify(gameLog)) {
             setGameLog(state.log || []);
           }
           
+          // Update screen based on game state
           if (state.status === 'lobby' && screen !== 'lobby') {
             setScreen('lobby');
           } else if (state.status === 'playing' && screen !== 'game') {
             setScreen('game');
+            // Set role if not already set
             if (!myRole && playerId !== null) {
               const player = state.players.find(p => p.id === playerId);
               if (player) setMyRole(player.role);
@@ -98,6 +120,7 @@ function TimeBombGame() {
     return () => clearInterval(interval);
   }, [roomCode, screen, playerId, myRole, gameLog]);
 
+  // Create room
   const createRoom = async () => {
     if (!playerName.trim()) {
       setError('Please enter your name');
@@ -136,6 +159,7 @@ function TimeBombGame() {
     }
   };
 
+  // Join room
   const joinRoom = async () => {
     if (!playerName.trim()) {
       setError('Please enter your name');
@@ -175,10 +199,20 @@ function TimeBombGame() {
         return;
       }
 
-      const newPlayerId = Math.max(...state.players.map(p => p.id)) + 1;
+      // Check if player name already exists or is rejoining
+      const existingPlayer = state.players.find(p => p.name === playerName.trim());
+      let myNewId;
+
+      if (existingPlayer) {
+          // Rejoin logic could go here, but for now we treat as new or error
+          // Simpler for this demo: create new ID
+          myNewId = Math.max(...state.players.map(p => p.id)) + 1;
+      } else {
+          myNewId = Math.max(...state.players.map(p => p.id)) + 1;
+      }
       
       state.players.push({
-        id: newPlayerId,
+        id: myNewId,
         name: playerName.trim(),
         ready: false
       });
@@ -186,7 +220,7 @@ function TimeBombGame() {
       await window.storage.set(`room:${code}`, JSON.stringify(state), true);
       
       setRoomCode(code);
-      setPlayerId(newPlayerId);
+      setPlayerId(myNewId);
       setGameState(state);
       setScreen('lobby');
     } catch (err) {
@@ -196,6 +230,7 @@ function TimeBombGame() {
     }
   };
 
+  // Update player count (host only)
   const updatePlayerCount = async (count) => {
     if (playerId !== gameState.hostId) return;
 
@@ -212,12 +247,16 @@ function TimeBombGame() {
     }
   };
 
+  // Toggle ready
   const toggleReady = async () => {
     const newState = { ...gameState };
-    const player = newState.players.find(p => p.id === playerId);
-    if (player) {
-      player.ready = !player.ready;
-    }
+    // We need to map over players to create a new array to avoid direct mutation issues
+    newState.players = newState.players.map(p => {
+        if (p.id === playerId) {
+            return { ...p, ready: !p.ready };
+        }
+        return p;
+    });
 
     try {
       await window.storage.set(`room:${roomCode}`, JSON.stringify(newState), true);
@@ -227,6 +266,7 @@ function TimeBombGame() {
     }
   };
 
+  // Start game (host only)
   const startGame = async () => {
     if (playerId !== gameState.hostId) return;
     if (gameState.players.length < 4) {
@@ -244,17 +284,20 @@ function TimeBombGame() {
 
     const config = GAME_CONFIG[gameState.playerCount];
     
+    // Assign roles
     const roles = [
       ...Array(config.sherlock).fill('sherlock'),
       ...Array(config.moriarty).fill('moriarty')
     ].sort(() => Math.random() - 0.5);
 
+    // Create wire deck
     const wireDeck = [
       ...Array(config.defusing).fill('defusing'),
       ...Array(config.bomb).fill('bomb'),
       ...Array(config.wires - config.defusing - config.bomb).fill('safe')
     ].sort(() => Math.random() - 0.5);
 
+    // Assign wires to players
     const playersWithRoles = gameState.players.map((player, idx) => ({
       ...player,
       role: roles[idx],
@@ -281,6 +324,7 @@ function TimeBombGame() {
       await window.storage.set(`room:${roomCode}`, JSON.stringify(newState), true);
       setGameState(newState);
       
+      // Set my role
       const me = playersWithRoles.find(p => p.id === playerId);
       if (me) setMyRole(me.role);
       
@@ -290,11 +334,15 @@ function TimeBombGame() {
     }
   };
 
+  // Cut a wire
   const cutWire = async (targetPlayerId, wireId) => {
     if (gameState.players[gameState.currentPlayer].id !== playerId) return;
     if (targetPlayerId === playerId) return;
 
     const newState = { ...gameState };
+    // Deep clone to avoid mutation references
+    newState.players = JSON.parse(JSON.stringify(newState.players));
+    
     const targetPlayer = newState.players.find(p => p.id === targetPlayerId);
     const currentPlayer = newState.players.find(p => p.id === playerId);
     const wire = targetPlayer.wires.find(w => w.id === wireId);
@@ -303,9 +351,11 @@ function TimeBombGame() {
     
     wire.revealed = true;
     
+    // Add to log
     const log = newState.log || [];
     let logMessage = `${currentPlayer.name} cut ${targetPlayer.name}'s wire: `;
     
+    // Check wire type
     if (wire.type === 'bomb') {
       logMessage += '💣 BOMB!';
       newState.status = 'ended';
@@ -332,12 +382,14 @@ function TimeBombGame() {
     if (newState.status !== 'ended') {
       newState.revealedInRound += 1;
       
+      // Check if round ends
       if (newState.revealedInRound === newState.playerCount) {
         if (newState.round === 4) {
           newState.status = 'ended';
           newState.winner = 'moriarty';
           log.push({ message: '⏰ 4 rounds completed. Moriarty wins!', timestamp: Date.now() });
         } else {
+          // Start new round
           const unrevealedWires = newState.players.flatMap(p => 
             p.wires.filter(w => !w.revealed).map(w => w.type)
           ).sort(() => Math.random() - 0.5);
@@ -359,6 +411,7 @@ function TimeBombGame() {
           log.push({ message: `🔄 Round ${newState.round} started!`, timestamp: Date.now() });
         }
       } else {
+        // Find next player index
         const currentPlayerIndex = newState.players.findIndex(p => p.id === targetPlayerId);
         newState.currentPlayer = currentPlayerIndex;
       }
@@ -373,12 +426,14 @@ function TimeBombGame() {
     }
   };
 
+  // Copy room code
   const copyRoomCode = () => {
     navigator.clipboard.writeText(roomCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // Leave room
   const leaveRoom = () => {
     setScreen('home');
     setRoomCode('');
@@ -390,6 +445,7 @@ function TimeBombGame() {
     setGameLog([]);
   };
 
+  // Play again (host only)
   const playAgain = async () => {
     if (playerId !== gameState.hostId) return;
 
@@ -634,7 +690,7 @@ function TimeBombGame() {
     const isHost = playerId === gameState.hostId;
     
     return (
-        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center p-4">
         <div className="bg-slate-800 rounded-2xl shadow-2xl p-8 max-w-md w-full border border-slate-700 text-center">
           <div className="mb-6">
             {gameState.winner === 'sherlock' ? (
@@ -694,189 +750,175 @@ function TimeBombGame() {
                 Leave Room
               </button>
             </div>
+            
             {!isHost && (
-                <p className="text-slate-400 text-sm">Waiting for host to start a new game...</p>
+              <p className="text-slate-400 text-sm">Waiting for host to start a new game...</p>
             )}
+          </div>
         </div>
-    </div>
-        </div>
+      </div>
     );
   }
 
   // Game Screen
+  if (!gameState || !gameState.players || !gameState.players[gameState.currentPlayer]) {
+      return <div className="text-white text-center p-10">Loading game state...</div>;
+  }
+  
   const currentPlayerObj = gameState.players[gameState.currentPlayer];
   const isMyTurn = currentPlayerObj.id === playerId;
+  const myPlayer = gameState.players.find(p => p.id === playerId);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 p-4">
       <div className="max-w-6xl mx-auto">
+        {/* Header */}
         <div className="bg-slate-800 rounded-xl p-4 mb-4 border border-slate-700">
           <div className="flex flex-wrap gap-4 justify-between items-center">
             <div className="flex items-center gap-4">
-              <div className={`px-4 py-2 rounded-lg font-bold ${myRole === 'sherlock' ? 'bg-blue-600 text-white' : 'bg-red-600 text-white'}`}>
+              <div className={`px-4 py-2 rounded-lg font-bold ${
+                myRole === 'sherlock' ? 'bg-blue-600 text-white' : 'bg-red-600 text-white'
+              }`}>
                 {myRole === 'sherlock' ? (
                   <><Shield className="inline w-4 h-4 mr-2" />Sherlock</>
                 ) : (
                   <><Zap className="inline w-4 h-4 mr-2" />Moriarty</>
                 )}
               </div>
+              
               <div className="text-white">
-            <div className="text-sm text-slate-400">Round</div>
-            <div className="text-2xl font-bold">{gameState.round}/4</div>
+                <div className="text-sm text-slate-400">Round</div>
+                <div className="text-2xl font-bold">{gameState.round}/4</div>
+              </div>
+              
+              <div className="text-white">
+                <div className="text-sm text-slate-400">Defusing Wires</div>
+                <div className="text-2xl font-bold text-blue-400">
+                  {gameState.defusingFound}/{gameState.config.defusing}
+                </div>
+              </div>
+            </div>
+            
+            <div className="text-white text-right">
+              <div className="text-sm text-slate-400">Current Turn</div>
+              <div className="text-xl font-bold">{currentPlayerObj.name}</div>
+              {isMyTurn && <div className="text-sm text-yellow-400">Your turn!</div>}
+            </div>
           </div>
           
-          <div className="text-white">
-            <div className="text-sm text-slate-400">Defusing Wires</div>
-            <div className="text-2xl font-bold text-blue-400">
-              {gameState.defusingFound}/{gameState.config.defusing}
-            </div>
+          <div className={`mt-4 p-3 rounded-lg ${
+            myRole === 'sherlock' ? 'bg-blue-900/50' : 'bg-red-900/50'
+          }`}>
+            <p className="text-white text-sm">
+              {myRole === 'sherlock' ? (
+                <>🎯 Find all {gameState.config.defusing} Defusing wires to win. Avoid the Bomb!</>
+              ) : (
+                <>💣 Cut the Bomb or survive 4 rounds to win. Mislead others!</>
+              )}
+            </p>
           </div>
-        </div>
-        
-        <div className="text-white text-right">
-          <div className="text-sm text-slate-400">Current Turn</div>
-          <div className="text-xl font-bold">{currentPlayerObj.name}</div>
-          {isMyTurn && <div className="text-sm text-yellow-400">Your turn!</div>}
-        </div>
-      </div>
-      
-      <div className={`mt-4 p-3 rounded-lg ${
-        myRole === 'sherlock' ? 'bg-blue-900/50' : 'bg-red-900/50'
-      }`}>
-        <p className="text-white text-sm">
-          {myRole === 'sherlock' ? (
-            <>🎯 Find all {gameState.config.defusing} Defusing wires to win. Avoid the Bomb!</>
-          ) : (
-            <>💣 Cut the Bomb or survive 4 rounds to win. Mislead others!</>
-          )}
-        </p>
-      </div>
-      
-      <button
-        onClick={() => setShowLog(!showLog)}
-        className="mt-4 w-full bg-slate-700 hover:bg-slate-600 text-white py-2 rounded-lg text-sm transition-all"
-      >
-        {showLog ? '📜 Hide Game Log' : '📜 Show Game Log'}
-      </button>
-      
-      {showLog && gameLog.length > 0 && (
-        <div className="mt-4 bg-slate-900 rounded-lg p-3 max-h-40 overflow-y-auto">
-          {gameLog.slice(-10).reverse().map((entry, idx) => (
-            <div key={idx} className="text-slate-300 text-xs py-1 border-b border-slate-800 last:border-0">
-              {entry.message}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-      {gameState.players.map((player) => {
-        const isCurrentPlayer = currentPlayerObj.id === player.id;
-        const isMe = player.id === playerId;
-        
-        return (
-          <div
-            key={player.id}
-            className={`bg-slate-800 rounded-xl p-4 border-2 transition-all ${
-              isCurrentPlayer
-                ? 'border-yellow-400 shadow-lg shadow-yellow-400/20'
-                : 'border-slate-700'
-            } ${isMe ? 'ring-2 ring-blue-500' : ''}`}
+          
+          {/* Game Log Toggle */}
+          <button
+            onClick={() => setShowLog(!showLog)}
+            className="mt-4 w-full bg-slate-700 hover:bg-slate-600 text-white py-2 rounded-lg text-sm transition-all"
           >
-            <div className="flex justify-between items-center mb-3">
-              <h3 className="text-white font-bold text-lg">
-                {player.name}
-                {isMe && <span className="text-xs ml-2 text-blue-400">(You)</span>}
-                {isCurrentPlayer && (
-                  <Scissors className="inline w-5 h-5 ml-2 text-yellow-400" />
-                )}
-              </h3>
-              <span className="text-slate-400 text-sm">
-                {player.wires.filter(w => !w.revealed).length} wires
-              </span>
+            {showLog ? '📜 Hide Game Log' : '📜 Show Game Log'}
+          </button>
+          
+          {showLog && gameLog.length > 0 && (
+            <div className="mt-4 bg-slate-900 rounded-lg p-3 max-h-40 overflow-y-auto">
+              {gameLog.slice(-10).reverse().map((entry, idx) => (
+                <div key={idx} className="text-slate-300 text-xs py-1 border-b border-slate-800 last:border-0">
+                  {entry.message}
+                </div>
+              ))}
             </div>
+          )}
+        </div>
 
-            <div className="grid grid-cols-5 gap-2">
-              {player.wires.map((wire) => {
-                const canCut = isMyTurn && !isMe && !wire.revealed;
-                const isSelected = selectedWire?.playerId === player.id && selectedWire?.wireId === wire.id;
-                
-                return (
-                  <button
-                    key={wire.id}
-                    onClick={() => {
-                      if (canCut) {
-                        setSelectedWire({ playerId: player.id, wireId: wire.id });
-                      }
-                    }}
-                    disabled={!canCut}
-                    className={`aspect-square rounded-lg transition-all ${
-                      wire.revealed
-                        ? wire.type === 'bomb'
-                          ? 'bg-red-500 text-white'
-                          : wire.type === 'defusing'
-                          ? 'bg-blue-500 text-white'
-                          : 'bg-slate-600 text-slate-400'
-                        : isSelected
-                        ? 'bg-yellow-500 scale-110 shadow-lg cursor-pointer'
-                        : canCut
-                        ? 'bg-slate-700 hover:bg-slate-600 cursor-pointer hover:scale-105'
-                        : 'bg-slate-700 cursor-not-allowed opacity-50'
-                    }`}
-                  >
-                    {wire.revealed ? (
-                      wire.type === 'bomb' ? '💣' :
-                      wire.type === 'defusing' ? '✂️' : '✓'
-                    ) : (
-                      '?'
+        {/* Players Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {gameState.players.map((player) => {
+            const isCurrentPlayer = currentPlayerObj.id === player.id;
+            const isMe = player.id === playerId;
+            
+            return (
+              <div
+                key={player.id}
+                className={`bg-slate-800 rounded-xl p-4 border-2 transition-all ${
+                  isCurrentPlayer
+                    ? 'border-yellow-400 shadow-lg shadow-yellow-400/20'
+                    : 'border-slate-700'
+                } ${isMe ? 'ring-2 ring-blue-500' : ''}`}
+              >
+                <div className="flex justify-between items-center mb-3">
+                  <h3 className="text-white font-bold text-lg">
+                    {player.name}
+                    {isMe && <span className="text-xs ml-2 text-blue-400">(You)</span>}
+                    {isCurrentPlayer && (
+                      <Scissors className="inline w-5 h-5 ml-2 text-yellow-400" />
                     )}
+                  </h3>
+                  <span className="text-slate-400 text-sm">
+                    {player.wires.filter(w => !w.revealed).length} wires
+                  </span>
+                </div>
+
+                {/* Wires */}
+                <div className="grid grid-cols-5 gap-2">
+                  {player.wires.map((wire) => {
+                    const canCut = isMyTurn && !isMe && !wire.revealed;
+                    const isSelected = selectedWire?.playerId === player.id && selectedWire?.wireId === wire.id;
+                    
+                    return (
+                      <button
+                        key={wire.id}
+                        onClick={() => {
+                          if (canCut) {
+                            setSelectedWire({ playerId: player.id, wireId: wire.id });
+                          }
+                        }}
+                        disabled={!canCut}
+                        className={`aspect-square rounded-lg transition-all ${
+                          wire.revealed
+                            ? wire.type === 'bomb'
+                              ? 'bg-red-500 text-white'
+                              : wire.type === 'defusing'
+                              ? 'bg-blue-500 text-white'
+                              : 'bg-slate-600 text-slate-400'
+                            : isSelected
+                            ? 'bg-yellow-500 scale-110 shadow-lg cursor-pointer'
+                            : canCut
+                            ? 'bg-slate-700 hover:bg-slate-600 cursor-pointer hover:scale-105'
+                            : 'bg-slate-700 cursor-not-allowed opacity-50'
+                        }`}
+                      >
+                        {wire.revealed ? (
+                          wire.type === 'bomb' ? '💣' :
+                          wire.type === 'defusing' ? '✂️' : '✓'
+                        ) : (
+                          '?'
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                
+                {isSelected && selectedWire?.playerId === player.id && (
+                  <button
+                    onClick={() => cutWire(player.id, selectedWire.wireId)}
+                    className="mt-3 w-full bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-bold py-2 rounded-lg flex items-center justify-center gap-2 animate-pulse"
+                  >
+                    <Scissors className="w-4 h-4" />
+                    CUT WIRE
                   </button>
-                );
-              })}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-
-    {selectedWire && isMyTurn && (
-      <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2">
-        <button
-          onClick={() => cutWire(selectedWire.playerId, selectedWire.wireId)}
-          className="bg-yellow-500 hover:bg-yellow-600 text-slate-900 px-8 py-4 rounded-full font-bold text-lg shadow-2xl transition-all hover:scale-105"
-        >
-          <Scissors className="inline w-6 h-6 mr-2" />
-          Cut Wire
-        </button>
-      </div>
-    )}
-
-    <div className="mt-6 bg-slate-800 rounded-xl p-4 border border-slate-700">
-      <h4 className="text-white font-bold mb-3 flex items-center">
-        <AlertCircle className="w-5 h-5 mr-2" />
-        Wire Types
-      </h4>
-      <div className="grid grid-cols-3 gap-4 text-sm">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-slate-600 rounded flex items-center justify-center text-slate-400">✓</div>
-          <span className="text-slate-300">Safe Wire</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-blue-500 rounded flex items-center justify-center">✂️</div>
-          <span className="text-slate-300">Defusing Wire</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-red-500 rounded flex items-center justify-center">💣</div>
-          <span className="text-slate-300">Bomb</span>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
-  </div>
-</div>
-);
+  );
 }
-// Initialize Lucide icons
-lucide.createIcons();
-// Render app
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<TimeBombGame />);
